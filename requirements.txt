@@ -1,5 +1,5 @@
-streamlit>=1.39.0
-openai>=1.55.3
-Pillow
-numpy
-python-dotenv
+streamlit==1.39.0
+openai==1.51.0
+pillow==10.4.0
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
