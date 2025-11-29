@@ -1,17 +1,18 @@
 import streamlit as st
 from openai import OpenAI
-import base64
 from PIL import Image
 from io import BytesIO
+import base64
 
-# ======================================================
-# Init OpenAI
-# ======================================================
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# ==========================================================
+# INIT OPENAI — MUST USE NEW SYNTAX (NO api_key ARG)
+# ==========================================================
+client = OpenAI()   # Uses Streamlit Secrets automatically
 
-# ======================================================
-# Utility: Convert uploaded image to base64
-# ======================================================
+
+# ==========================================================
+# Utility: Convert uploaded image → base64
+# ==========================================================
 def img_to_base64(uploaded_file):
     img = Image.open(uploaded_file)
     buf = BytesIO()
@@ -19,35 +20,180 @@ def img_to_base64(uploaded_file):
     return base64.b64encode(buf.getvalue()).decode()
 
 
-# ======================================================
-# GPT-5.1 Vision Diagnosis (Western + TCM)
-# ======================================================
+# ==========================================================
+# GPT-5.1 Vision Diagnosis (Image + Symptoms)
+# ==========================================================
 def diagnose_with_vision(image_file, symptoms, lang):
+
     base64_img = img_to_base64(image_file)
 
-    prompt = f"""
-You are a senior orthopedic specialist and senior TCM physician.
+    prompt_text = f"""
+You are a senior orthopedic specialist + senior TCM doctor.
 
-Analyze the joint image and symptoms:
 Symptoms: {symptoms}
 
 Return a dual medical report:
 
 ===== Western Medicine =====
-1. Likely diagnosis  
-2. Visible structural issues in the image  
-3. Severity (mild / moderate / severe)  
-4. Home care treatment  
-5. When to visit a doctor  
+1. Likely diagnosis
+2. Visible structural issues
+3. Severity (mild/moderate/severe)
+4. Home-care recommendations
+5. When to seek medical care
 
-===== Traditional Chinese Medicine =====
-1. TCM pattern (证型)  
-2. Related meridians (经络)  
-3. Imbalance explanation (气血/寒湿/肝肾亏虚)  
-4. Acupoints (穴位)  
-5. Gentle herbal suggestions (elder-safe)  
+===== TCM =====
+1. Pattern diagnosis (证型)
+2. Meridians involved
+3. Imbalance explanation
+4. Acupoints
+5. Mild safe herbal suggestions
 
-Return in: {lang}.
+Language: {lang}
+"""
+
+    response = client.responses.create(
+        model="gpt-5.1-vision",
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt_text},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{base64_img}"
+                    }
+                ]
+            }
+        ]
+    )
+
+    return response.output_text
+
+
+# ==========================================================
+# GPT-5.1 Text-only Diagnosis
+# ==========================================================
+def diagnose_from_text(symptoms, lang):
+
+    prompt = f"""
+Patient symptoms: {symptoms}
+
+Give BOTH Western Medicine + TCM report.
+
+Language: {lang}
+"""
+
+    response = client.responses.create(
+        model="gpt-5.1",
+        input=prompt
+    )
+    return response.output_text
+
+
+# ==========================================================
+# Elder Speaker (Summary + TTS)
+# ==========================================================
+def create_elder_tts(text, lang):
+
+    if lang.startswith("中文"):
+        prompt = f"将以下内容总结为 3 句简单老人语言：\n{text}"
+    else:
+        prompt = f"Simplify into 3 elderly-friendly sentences:\n{text}"
+
+    summary_resp = client.responses.create(
+        model="gpt-5.1",
+        input=prompt
+    )
+    summary = summary_resp.output_text
+
+    # TTS
+    audio_resp = client.audio.speech.create(
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+        input=summary,
+        format="mp3"
+    )
+    audio_bytes = audio_resp.read()
+
+    return summary, audio_bytes
+
+
+# ==========================================================
+# TCM Remedy Generator
+# ==========================================================
+def generate_tcm_recommendation(lang):
+
+    if lang.startswith("中文"):
+        lang_cmd = "用中文回答。"
+    else:
+        lang_cmd = "Respond in English."
+
+    prompt = f"""
+Provide a safe TCM guideline for elderly joint pain.
+
+Include:
+• Pattern types
+• Meridians + acupoints
+• Food therapy
+• Daily habits
+• Safety notes
+
+{lang_cmd}
+"""
+
+    response = client.responses.create(
+        model="gpt-5.1",
+        input=prompt
+    )
+    return response.output_text
+
+
+# ==========================================================
+# Rehab Video Generator (GPT-Video API)
+# ==========================================================
+def generate_rehab_video(joint_type, lang):
+
+    script_prompt = f"""
+Generate a rehabilitation exercise script for {joint_type} joint pain.
+Include warm-up, stretching, strengthening.
+
+Language: {lang}
+"""
+
+    script_resp = client.responses.create(
+        model="gpt-5.1",
+        input=script_prompt
+    )
+    script_text = script_resp.output_text
+
+    # Generate actual video
+    video_resp = client.video.generate(
+        model="gpt-4o-video",
+        prompt=script_text
+    )
+
+    vid_bytes = video_resp.read()
+
+    return script_text, vid_bytes
+
+
+# ==========================================================
+# GPT-5.1 Motion Tracking
+# ==========================================================
+def perform_motion_tracking(uploaded_video, lang):
+
+    video_bytes = uploaded_video.read()
+
+    prompt = f"""
+Analyze human motion for rehab quality:
+
+• Joint angle stability  
+• Balance  
+• Posture correctness  
+• Weak points  
+• Improvements  
+
+Language: {lang}
 """
 
     response = client.responses.create(
@@ -57,156 +203,22 @@ Return in: {lang}.
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "input_image", "image": base64_img}
+                    {"type": "input_file", "input_file": video_bytes}
                 ]
             }
         ]
     )
 
-    # NEW: Correct extraction for Responses API
-    try:
-        output = response.output[0].content[0].text
-    except Exception:
-        output = "⚠️ Error: Could not extract output_text from GPT-5.1 Vision."
-
-    return output
+    return response.output_text
 
 
-# ======================================================
-# Text Diagnosis (GPT-5.1)
-# ======================================================
-def diagnose_from_text(symptoms, lang):
-    prompt = f"""
-You are an orthopedic doctor + TCM doctor.
-Patient symptoms: {symptoms}
+# ==========================================================
+# Streamlit UI (Single Layer — Tabs Only)
+# ==========================================================
+st.set_page_config(page_title="SilverMotion AI", layout="wide")
 
-Provide:
-
-===== Western Medicine =====
-• Possible diagnosis  
-• Why these symptoms occur  
-• Recommended exercises  
-• Home care instructions  
-
-===== Traditional Chinese Medicine =====
-• TCM pattern  
-• Acupoints  
-• Daily lifestyle  
-• Food therapy  
-
-Language: {lang}
-"""
-
-    resp = client.responses.create(model="gpt-5.1", input=prompt)
-    return resp.output_text
-
-
-# ======================================================
-# Elder Speaker (summary + TTS)
-# ======================================================
-def elder_summarize(text, lang):
-    if lang.startswith("中文"):
-        p = f"将以下内容总结成 3 句简单易懂的老人语言：\n{text}"
-    else:
-        p = f"Rewrite into 3 sentences for seniors:\n{text}"
-
-    summary_resp = client.responses.create(model="gpt-5.1", input=p)
-    summary = summary_resp.output_text
-
-    audio = client.audio.speech.create(
-        model="gpt-4o-mini-tts",
-        voice="alloy",
-        input=summary,
-        format="mp3"
-    )
-
-    return summary, audio.read()
-
-
-# ======================================================
-# TCM Remedies (Standalone)
-# ======================================================
-def generate_tcm(lang):
-    if lang.startswith("中文"):
-        lp = "用中文回答。"
-    else:
-        lp = "Respond in English."
-
-    p = f"""
-Provide Traditional Chinese Medicine advice for joint pain:
-- Patterns (寒湿 / 气滞血瘀 / 肝肾亏虚)
-- Meridians & acupoints
-- Food therapy
-- Lifestyle
-- Elder safety notes
-
-{lp}
-"""
-    resp = client.responses.create(model="gpt-5.1", input=p)
-    return resp.output_text
-
-
-# ======================================================
-# Pain Score AI
-# ======================================================
-def estimate_pain_score(symptoms, lang):
-    p = f"""
-Based on symptoms:
-{symptoms}
-
-Predict:
-• Pain score (0–10)
-• Mobility impact
-• Red flags
-• Elder-friendly advice
-Language: {lang}
-"""
-    resp = client.responses.create(model="gpt-5.1", input=p)
-    return resp.output_text
-
-
-# ======================================================
-# Basic Motion Tracking (GPT-4o Vision)
-# ======================================================
-def analyze_motion(image_file, lang):
-    base64_img = img_to_base64(image_file)
-
-    p = f"""
-You are a physiotherapy expert.
-Analyze the image for:
-
-- Joint alignment  
-- Knee valgus/varus  
-- Posture issues  
-- Movement safety  
-- Rehab corrections  
-
-Language: {lang}
-"""
-
-    r = client.responses.create(
-        model="gpt-4.1-vision",
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": p},
-                    {"type": "input_image", "image": base64_img}
-                ]
-            }
-        ]
-    )
-    return r.output[0].content[0].text
-
-
-# ======================================================
-# Streamlit UI
-# ======================================================
-st.set_page_config(page_title="SilverMotionAI", layout="wide")
-
-st.title("💙 SilverMotionAI — Medical • TCM • Vision AI • Rehab • Motion Tracking")
-
-out_lang = st.sidebar.selectbox("🌍 Output Language", ["English", "中文（简体）"])
+st.sidebar.title("🌍 Output Language")
+output_lang = st.sidebar.selectbox("Choose", ["English", "中文（简体）"])
 
 tabs = st.tabs([
     "🏠 Home",
@@ -215,73 +227,115 @@ tabs = st.tabs([
     "🔊 Elder Speaker",
     "🌿 TCM Remedies",
     "❤️ Pain Score",
-    "🏃 Motion Tracking"
+    "🎥 Rehab Video",
+    "🕺 Motion Tracking"
 ])
 
-# ---------------- Home ----------------
+# ----------------------------------------------------------
+# HOME
+# ----------------------------------------------------------
 with tabs[0]:
-    st.subheader("AI-powered Joint Health Assistant")
-    st.write("Choose a function above to begin.")
+    st.title("💙 SilverMotion AI – Medical • TCM • Vision AI • Rehab • Motion Tracking")
+    st.write("One-stop multimodal elder-friendly joint health assistant.")
 
 
-# ---------------- Image Diagnosis ----------------
+# ----------------------------------------------------------
+# IMAGE DIAGNOSIS
+# ----------------------------------------------------------
 with tabs[1]:
-    st.header("📸 AI Image Diagnosis — GPT-5.1 Vision")
+    st.header("📸 AI Image Diagnosis — GPT-5.1 Vision (Western + TCM)")
 
-    img = st.file_uploader("Upload joint image", type=["png", "jpg", "jpeg"])
-    sx = st.text_area("Describe symptoms", "")
+    img = st.file_uploader("Upload joint photo", type=["jpg", "png", "jpeg"])
+    symptoms = st.text_area("Describe symptoms")
 
     if st.button("🔍 Run Diagnosis"):
         if img:
-            with st.spinner("Analyzing image..."):
-                result = diagnose_with_vision(img, sx, out_lang)
-            st.success("Diagnosis Ready ✓")
-            st.markdown(result)
+            result = diagnose_with_vision(img, symptoms, output_lang)
+            st.success(result)
         else:
-            st.warning("Please upload an image first.")
+            st.error("Please upload an image.")
 
 
-# ---------------- Text Diagnosis ----------------
+# ----------------------------------------------------------
+# TEXT DIAGNOSIS
+# ----------------------------------------------------------
 with tabs[2]:
     st.header("📝 Text Diagnosis")
-    ts = st.text_area("Enter symptoms")
+    symptoms = st.text_area("Describe your symptoms")
+
     if st.button("Run Text Diagnosis"):
-        st.markdown(diagnose_from_text(ts, out_lang))
-
-
-# ---------------- Elder Speaker ----------------
-with tabs[3]:
-    st.header("🔊 Elder Speaker Mode")
-    long_text = st.text_area("Paste diagnosis text here")
-    if st.button("Generate Elder Summary"):
-        s, audio = elder_summarize(long_text, out_lang)
-        st.write(s)
-        st.audio(audio, format="audio/mp3")
-
-
-# ---------------- TCM Remedies ----------------
-with tabs[4]:
-    st.header("🌿 TCM Joint Pain Remedies")
-    if st.button("Generate TCM Advice"):
-        st.markdown(generate_tcm(out_lang))
-
-
-# ---------------- Pain Score ----------------
-with tabs[5]:
-    st.header("❤️ AI Pain Score Estimation")
-    psx = st.text_area("Describe pain level / mobility issue")
-    if st.button("Estimate Pain Score"):
-        st.markdown(estimate_pain_score(psx, out_lang))
-
-
-# ---------------- Motion Tracking ----------------
-with tabs[6]:
-    st.header("🏃 Motion Tracking — GPT-4o Vision")
-    motion_img = st.file_uploader("Upload posture/movement image", type=["jpg","jpeg","png"])
-    if st.button("Analyze Motion"):
-        if motion_img:
-            with st.spinner("Analyzing posture..."):
-                m = analyze_motion(motion_img, out_lang)
-            st.markdown(m)
+        if symptoms.strip():
+            r = diagnose_from_text(symptoms, output_lang)
+            st.success(r)
         else:
-            st.warning("Upload an image first.")
+            st.error("Enter symptoms first.")
+
+
+# ----------------------------------------------------------
+# ELDER SPEAKER
+# ----------------------------------------------------------
+with tabs[3]:
+    st.header("🔊 Elder Speaker")
+
+    text_in = st.text_area("Paste medical explanation")
+    if st.button("Generate Elder Summary + TTS"):
+        if text_in.strip():
+            summary, audio = create_elder_tts(text_in, output_lang)
+            st.write(summary)
+            st.audio(audio, format="audio/mp3")
+        else:
+            st.error("Enter text first.")
+
+
+# ----------------------------------------------------------
+# TCM REMEDIES
+# ----------------------------------------------------------
+with tabs[4]:
+    st.header("🌿 TCM Remedies")
+    if st.button("Generate TCM Advice"):
+        r = generate_tcm_recommendation(output_lang)
+        st.success(r)
+
+
+# ----------------------------------------------------------
+# PAIN SCORE – GPT AI feedback
+# ----------------------------------------------------------
+with tabs[5]:
+    st.header("❤️ Pain Score AI")
+
+    ps = st.slider("Rate your pain level", 0, 10, 5)
+    if st.button("Explain My Pain Level"):
+        resp = client.responses.create(
+            model="gpt-5.1",
+            input=f"Pain score: {ps}. Explain in {output_lang}."
+        )
+        st.success(resp.output_text)
+
+
+# ----------------------------------------------------------
+# REHAB VIDEO
+# ----------------------------------------------------------
+with tabs[6]:
+    st.header("🎥 Rehab Video Generator")
+
+    joint = st.selectbox("Joint", ["Knee", "Shoulder", "Hip", "Neck"])
+    if st.button("Generate Rehab Video"):
+        script, vbytes = generate_rehab_video(joint, output_lang)
+        st.write(script)
+        st.video(vbytes)
+
+
+# ----------------------------------------------------------
+# MOTION TRACKING
+# ----------------------------------------------------------
+with tabs[7]:
+    st.header("🕺 Motion Tracking – GPT-5.1 Vision")
+
+    video_file = st.file_uploader("Upload exercise video", type=["mp4", "mov"])
+
+    if st.button("Analyze Motion"):
+        if video_file:
+            r = perform_motion_tracking(video_file, output_lang)
+            st.success(r)
+        else:
+            st.error("Upload a video first.")
